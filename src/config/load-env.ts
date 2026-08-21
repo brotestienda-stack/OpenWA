@@ -25,10 +25,18 @@ export function loadEnvironment(): void {
   const userEnvPath = path.resolve(process.cwd(), '.env');
 
   // Ensure data directory exists
-  const dataDir = path.dirname(generatedEnvPath);
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
+  //const dataDir = path.dirname(generatedEnvPath);
+  //if (!fs.existsSync(dataDir)) {
+  //  fs.mkdirSync(dataDir, { recursive: true });
+  //}
+
+  const dataPath = process.env.VERCEL
+  ? '/tmp/data'
+  : path.resolve(process.cwd(), 'data');
+
+if (!fs.existsSync(dataPath)) {
+  fs.mkdirSync(dataPath, { recursive: true });
+}
 
   // Tighten any pre-existing secret files written before per-file 0600 perms (best-effort) — the
   // generated .env holds S3/DB/Redis secrets and .api-key holds the raw admin key.

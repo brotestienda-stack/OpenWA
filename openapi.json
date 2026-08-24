@@ -768,9 +768,6 @@
           },
           "404": {
             "description": "Session not found"
-          },
-          "409": {
-            "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
           }
         },
         "summary": "Get QR code for session authentication",
@@ -821,7 +818,7 @@
             "description": "Session not found"
           },
           "409": {
-            "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+            "description": "The session is not waiting to be linked: the engine is still connecting, or reconnecting after a drop, so the request never reached WhatsApp. Wait for `status` to read `qr_ready` and retry. Once a code has been accepted the session moves through `authenticating` and `initializing` to `ready` and answers this until then; wait for `ready` in that case. A session that reads `ready` is already linked and answers `400` instead. One window answers this while the session still reads `qr_ready`: on the Baileys engine a socket that has begun closing stops accepting a pairing request before the status catches up, which on a silently dropped connection takes until the WebSocket's close timeout (30 s); retry, and the status follows shortly."
           }
         },
         "summary": "Request an 8-char pairing code to link via phone number (alternative to QR)",
@@ -9413,6 +9410,12 @@
           },
           "501": {
             "description": "No search provider configured"
+          },
+          "502": {
+            "description": "The active plugin search provider returned a result shape that failed validation, so nothing trustworthy could be forwarded. The built-in provider never returns this."
+          },
+          "503": {
+            "description": "The active plugin search provider did not answer: its worker is not running, timed out, or reported a failure. The built-in provider never returns this. Retryable."
           }
         },
         "summary": "Search messages across sessions (active search provider)",
@@ -9425,7 +9428,7 @@
   "info": {
     "title": "OpenWA API",
     "description": "Open Source WhatsApp API Gateway - Free, Self-Hosted HTTP API\n\n**Gateway-wide responses.** Two statuses are returned by middleware before routing, so any operation can emit them:\n\n- `415 Unsupported Media Type` — the request body carries a `Content-Encoding` other than `identity`. The aggregate in-flight body cap counts wire bytes, so a compressed body would be admitted on its compressed size and then inflated past the memory it is meant to bound. Send the body uncompressed.\n- `503 Service Unavailable` with `Retry-After` — the gateway already has too much request body data in flight. The body is not read; retry after the given delay.",
-    "version": "0.23.0",
+    "version": "0.23.3",
     "contact": {
       "name": "OpenWA",
       "url": "https://github.com/rmyndharis/OpenWA",
@@ -14774,12 +14777,12 @@
           "inviteCode": {
             "type": "string",
             "description": "The invite code on its own.",
-            "example": "GTvX9c8H8l718ewOH22Zk5"
+            "example": "EXAMPLEINVITECODE12345"
           },
           "inviteLink": {
             "type": "string",
             "description": "The same code as a joinable link.",
-            "example": "https://chat.whatsapp.com/GTvX9c8H8l718ewOH22Zk5"
+            "example": "https://chat.whatsapp.com/EXAMPLEINVITECODE12345"
           }
         },
         "required": [
@@ -14793,12 +14796,12 @@
           "inviteCode": {
             "type": "string",
             "description": "The invite code on its own.",
-            "example": "GTvX9c8H8l718ewOH22Zk5"
+            "example": "EXAMPLEINVITECODE12345"
           },
           "inviteLink": {
             "type": "string",
             "description": "The same code as a joinable link.",
-            "example": "https://chat.whatsapp.com/GTvX9c8H8l718ewOH22Zk5"
+            "example": "https://chat.whatsapp.com/EXAMPLEINVITECODE12345"
           },
           "message": {
             "type": "string",

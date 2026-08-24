@@ -5,15 +5,90 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.23.3] - 2026-08-24
+
+### Added
+
+- A previously linked session that comes back asking for a QR now logs a warning (`relink_required`) naming the
+  likely causes, since an unlink that happened while the engine was down can leave no other trace.
+
+### Changed
+
+- `GET /search` declares the plugin provider's failure answers in the contract: `502` for an invalid result
+  shape and `503` when the provider does not answer; the built-in provider never returns either.
+- `POST /sessions/{sessionId}/pairing-code`: the 409 description in the OpenAPI contract and API reference
+  now says to wait for `qr_ready`, not `ready`, which on this route means the session is already linked, and
+  to wait for `ready` once a code was accepted.
+- `GET /sessions/{sessionId}/qr` no longer declares the engine-not-ready 409: the route reads the engine's
+  cached QR and never answers one. Its 400 already covers the not-ready case.
+
+### Fixed
+
+- Session auto-start no longer runs twice at boot. The plugin port for `SessionService` was a factory returning
+  the same instance, which made Nest dispatch its lifecycle hooks twice: two auto-start loops raced, each
+  session logged `Auto-start failed` with `Session is already starting`, and the 2 s launch stagger was lost.
+- Baileys: requesting a pairing code before the session reaches `qr_ready` answers the documented 409 instead
+  of a 500 with a `Connection Closed` stack trace, the same guard the whatsapp-web.js engine already carried.
+  Thanks @m7fz7.
+- Baileys: once WhatsApp accepts a QR scan or pairing code the session leaves `qr_ready` (`authenticating`,
+  then `initializing` across the restart WhatsApp requests) and ignores the QR refreshes Baileys keeps
+  emitting until then, so a repeat pairing request answers 409 instead of overwriting the linked identity.
+- Baileys: a QR that finishes rendering after its socket dropped is discarded instead of marking the session
+  `qr_ready`.
+- A WhatsApp-initiated unlink now clears the session's `phone` the way an operator logout does, so a restart
+  no longer relaunches the unlinked session into a QR nobody asked for; the next successful link sets it
+  again.
+- Baileys: a pairing request on a socket that has already begun closing answers the documented 409 instead of
+  a 500, and no longer writes a half-registered identity into the session's stored credentials.
+- Both engines drop the cached QR as soon as its socket or page dies, so `GET /sessions/{sessionId}/qr`
+  answers its documented 400 instead of 200 with a code that can no longer be scanned.
+
+### Documentation
+
+- The upgrade runbook and the migration guide state the `docker-compose.dev.yml` caveat before the first
+  `docker compose` command instead of after it, and name the `openwa` service substitution it needs.
+- `GET /api/health` is documented consistently as withholding `version` from unauthenticated callers.
+
+### Dependencies
+
+- `@bull-board/{api,express,nestjs}` 8.6.1 to 9.3.2 (major), plus a minor/patch group (NestJS 11.2.1,
+  BullMQ 6.2.0, AWS SDK) and a dashboard group (Vite 8.2.2, i18next 26.4.0, lucide-react 1.33).
+
+### Upgrade notes (behavior changes)
+
+- The queue dashboard's obliterate action gained a **force** option in Bull Board 9. Forcing it deletes
+  active jobs as well as queued ones, so those deliveries never reach a final attempt and no
+  `webhook_delivery_failures` row is written for them. Bull Board 8 refused outright while jobs were
+  active. The route stays ADMIN-only behind `BullBoardAuthMiddleware`.
+
+## [0.23.2] - 2026-08-23
+
+### Fixed
+
+- Baileys: an inbound shared contact card's vCard now populates the message `body` instead of being silently
+  dropped, matching what whatsapp-web.js returns for its `vcard` type. Several contacts shared
+  together (`contactsArrayMessage`) are newline-joined into one multi-vCard body, in the order they were
+  shared. Thanks @memarius.
+- The message-type filter on webhooks and automation rules accepts `poll`. The dashboard offered the option but
+  saving was refused as invalid.
+- Baileys: inbound poll questions, shared event names and business button-reply selections now fill the message
+  `body` instead of arriving empty. Webhook filters, search and the dashboard see this text on both engines now.
+- Baileys: quoting a contact card or poll keeps its text in the quoted-message preview instead of an empty
+  string; the quote reuses the same body extraction as the live message.
+- `docker compose up -d` builds from a Windows clone again. Git's default `core.autocrlf=true` gave the committed
+  PGDG signing key CRLF endings and the build failed with `NO_PUBKEY 7FCC7D46ACCC4CF8`. The key is now pinned to LF
+  and the build strips CR, so a clone already on disk needs no re-clone. Thanks @ATZ-Jordan.
+
+## [0.23.1] - 2026-08-21
 
 ### Fixed
 
 - The dashboard chat room shrinks within its layout instead of overflowing it, so a long contact or group name no longer pushes the send button out of reach. Thanks @rainerigius.
-- The chat composer shrinks with its pane, so the send button stays reachable. It sat outside the layout's clip below a 1014px viewport with the navigation expanded, and on any phone 402 CSS px or narrower.
+- The chat composer shrinks with its pane, so the send button stays reachable. It sat outside the layout's clip below a 1015px viewport with the navigation expanded, and on any phone 403 CSS px or narrower.
 - The channel and status pane heading truncates with an ellipsis and carries its full text in a tooltip. A long title previously ran past the panel edge, cut mid-glyph with nothing to signal it.
-- The Chats page shows one pane at a time from 769px to 888px with the navigation expanded, where two panes left the room narrower than the composer and pushed the send button out of the panel. The message field now keeps a floor rather than shrinking to nothing.
+- The Chats page shows one pane at a time from 769px to 889px with the navigation expanded, where two panes left the room narrower than the composer and pushed the send button out of the panel. The message field now keeps a floor rather than shrinking to nothing.
 - The reply banner's quoted name truncates with an ellipsis, and a location message's map preview is bounded by its bubble. Both previously painted outside the chat panel when the room was narrow.
+- API examples and test fixtures use synthetic identifiers throughout, so the published schema and the specs no longer carry values copied from a live account.
 
 ## [0.23.0] - 2026-08-20
 

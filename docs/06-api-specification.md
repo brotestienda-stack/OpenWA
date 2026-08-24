@@ -94,20 +94,20 @@ Validation failures (`statusCode: 400`) return `message` as an **array** of fiel
 
 ### General Error Codes
 
-| HTTP Status | Meaning               | When                                                                                                                                                                                                                    |
-| ----------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `400`       | Bad Request           | DTO validation failed, unknown body field, or a business precondition not met (e.g. session not active, media over cap)                                                                                                 |
-| `401`       | Unauthorized          | Missing/invalid/expired/revoked `X-API-Key` (or `METRICS_TOKEN` for metrics), a blocked source IP, or a key used outside its `allowedSessions` scope                                                                    |
-| `403`       | Forbidden             | A valid, in-scope key whose **role** is below the route's `@RequireRole` requirement                                                                                                                                    |
-| `404`       | Not Found             | The addressed resource (session, message, webhook, batch, …) does not exist                                                                                                                                             |
-| `409`       | Conflict              | A uniqueness constraint was violated (e.g. duplicate name), or a credential teardown for the same session name is still in flight on `start`/`delete` (retryable; body carries `code: 'SESSION_NAME_TEARDOWN_PENDING'`) |
-| `413`       | Payload Too Large     | Base64 media exceeds the media byte cap (see §6.3)                                                                                                                                                                      |
-| `415`       | Unsupported Media     | The request has a body carrying a `Content-Encoding` other than `identity`; compressed request bodies are not accepted, as the aggregate body cap counts wire bytes                                                     |
-| `429`       | Too Many Requests     | A rate limit was exceeded: the per-client-IP tiers, the ingress per-instance limit, or send pacing (body carries `code: 'SEND_PACING_LIMITED'` and `retryAfterSeconds`); honor `Retry-After` when present               |
-| `500`       | Internal Server Error | Send failed at the WhatsApp engine or an unexpected server error                                                                                                                                                        |
-| `501`       | Not Implemented       | The operation is not supported by the active engine (see the capability matrix, docs/29)                                                                                                                                |
-| `502`       | Bad Gateway           | An engine transport failure (e.g. a dead Baileys socket); retryable                                                                                                                                                     |
-| `503`       | Service Unavailable   | A dependency or the session is not ready (boot draining, a datastore down, the engine reconnecting); retryable                                                                                                          |
+| HTTP Status | Meaning               | When                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ----------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400`       | Bad Request           | DTO validation failed, unknown body field, or a business precondition not met (e.g. session not active, media over cap)                                                                                                                                                                                                                                                                                                                                               |
+| `401`       | Unauthorized          | Missing/invalid/expired/revoked `X-API-Key` (or `METRICS_TOKEN` for metrics), a blocked source IP, or a key used outside its `allowedSessions` scope                                                                                                                                                                                                                                                                                                                  |
+| `403`       | Forbidden             | A valid, in-scope key whose **role** is below the route's `@RequireRole` requirement                                                                                                                                                                                                                                                                                                                                                                                  |
+| `404`       | Not Found             | The addressed resource (session, message, webhook, batch, …) does not exist                                                                                                                                                                                                                                                                                                                                                                                           |
+| `409`       | Conflict              | A uniqueness constraint was violated (e.g. duplicate name); a credential teardown for the same session name is still in flight on `start`/`delete` (retryable; body carries `code: 'SESSION_NAME_TEARDOWN_PENDING'`); or, on routes that reach a WhatsApp engine, the engine exists but is not ready yet (retryable; each route section carries the exact wording); or, on a multi-node deployment, another node currently owns the session's live engine (retryable) |
+| `413`       | Payload Too Large     | Base64 media exceeds the media byte cap (see §6.3)                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `415`       | Unsupported Media     | The request has a body carrying a `Content-Encoding` other than `identity`; compressed request bodies are not accepted, as the aggregate body cap counts wire bytes                                                                                                                                                                                                                                                                                                   |
+| `429`       | Too Many Requests     | A rate limit was exceeded: the per-client-IP tiers, the ingress per-instance limit, or send pacing (body carries `code: 'SEND_PACING_LIMITED'` and `retryAfterSeconds`); honor `Retry-After` when present                                                                                                                                                                                                                                                             |
+| `500`       | Internal Server Error | Send failed at the WhatsApp engine or an unexpected server error                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `501`       | Not Implemented       | The operation is not supported by the active engine (see the capability matrix, docs/29)                                                                                                                                                                                                                                                                                                                                                                              |
+| `502`       | Bad Gateway           | An engine transport failure (e.g. a dead Baileys socket; retryable), or an upstream component returned something unusable (not retryable; each route section carries the exact wording)                                                                                                                                                                                                                                                                               |
+| `503`       | Service Unavailable   | A dependency or the session is not ready (boot draining, a datastore down, the engine reconnecting); retryable                                                                                                                                                                                                                                                                                                                                                        |
 
 ### Timestamp Conventions
 
@@ -356,7 +356,7 @@ Get the QR code (PNG data URL) for session authentication.
 
 `status` is the session's current lowercase status.
 
-**Errors:** `400` session not started / QR not ready yet / already authenticated · `401` · `403` · `404` not found · `409` conflict or engine not ready (retryable)
+**Errors:** `400` session not started / QR not ready yet / already authenticated · `401` · `403` · `404` not found
 
 #### GET /api/sessions/:sessionId/groups
 
@@ -614,7 +614,8 @@ the old credentials remain usable depends on where the failure happened, and the
 report which.
 
 With `AUTO_START_SESSIONS=true`, auto-start selects sessions whose `phone` is non-null. Both a `200`
-and a `502` logout clear `phone`, so neither is auto-started on boot — an incomplete-logout (`502`)
+and a `502` logout clear `phone`, and a WhatsApp-initiated unlink reported by a running engine clears
+it the same way, so none of those are auto-started on boot — an incomplete-logout (`502`)
 session must be started explicitly and the logout retried by hand. A session that must stay down can
 simply be left as-is.
 
@@ -718,7 +719,7 @@ Request an 8-char pairing code to link via phone number (alternative to QR).
 
 `status` is the lowercase session status.
 
-**Errors:** `400` validation, or session not started, or already authenticated · `401` · `403` · `404` not found · `409` conflict or engine not ready (retryable)
+**Errors:** `400` validation, or session not started, or already authenticated · `401` · `403` · `404` not found · `409` session not waiting to be linked yet; wait for `status` to read `qr_ready` and retry (after a code was accepted, wait for `ready` instead). On Baileys a session that already reads `qr_ready` can still answer `409` while its socket is closing, for up to the WebSocket close timeout (30 s); that is retryable and the status follows shortly.
 
 #### POST /api/sessions/:sessionId/presence/subscribe
 
@@ -2521,7 +2522,7 @@ Raw array (no envelope). The service calls `engine.getGroups()`, projects each e
 ]
 ```
 
-**Errors:** `400` session is not started · `401` missing/invalid `X-API-Key` · `409` conflict or engine not ready (retryable) · `503` session not ready or dependency unavailable (retryable)
+**Errors:** `400` session is not started · `401` missing/invalid `X-API-Key` · `404` session not found · `409` conflict or engine not ready (retryable) · `503` session not ready or dependency unavailable (retryable)
 
 #### GET /api/sessions/:sessionId/groups/:groupId
 
@@ -6125,8 +6126,9 @@ Search messages across sessions (active search provider).
 SQLite FTS5 query (unbalanced quote/paren, bare operator) — Postgres's `websearch_to_tsquery` is
 tolerant and has no equivalent · `401` missing/invalid `X-API-Key` · `403` key role below `OPERATOR` ·
 `501` no search provider configured (including a non-FTS5 SQLite build, where the provider is absent) ·
-`503` active provider unhealthy (**reserved**: the built-in provider does not return it; it is the
-contract surface for a future plugin provider whose `search()` throws `ServiceUnavailableException`).
+`502` the active plugin provider returned an invalid result shape (not retryable until the plugin is fixed) ·
+`503` the active plugin provider did not answer (worker not running, timed out, or reported a failure;
+retryable). The built-in provider returns neither `502` nor `503`.
 
 > Scoping is authoritative: a scoped API key's `allowedSessions` is applied server-side and cannot be
 > overridden via the query — there is no `sessionIds` query parameter, and `SearchService` overwrites

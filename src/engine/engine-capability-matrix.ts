@@ -302,7 +302,7 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
     evidence:
-      "wwjs Call.reject() (index.d.ts:2417) on the live Call cached from the client 'call' event (index.d.ts:643); baileys rejectCall(callId, callFrom) (Socket/messages-recv.d.ts:10) with the raw `from` JID cached from the 'offer' call event (Types/Call.d.ts)",
+      "wwjs Call.reject() (index.d.ts:2417) on the live Call cached from the client 'call' event (index.d.ts:643); baileys rejectCall(callId, callFrom) (Socket/messages-recv.d.ts:10) with the raw `from` JID cached from the 'offer' call event (Types/Call.d.ts). On current WhatsApp Web builds the wwjs 'call' event no longer fires for a ringing call (measured live on OpenWA 0.14.4 on 2026-08-10, Baileys firing call.received and call.rejected on the same bench), so the wwjs cache is never populated: the cell records the implemented method, and docs/29 29.7 carries the caveat",
   },
   sendCatalog: {
     wwjs: { status: 'not-available', rootCause: 'library-limitation' },
@@ -332,7 +332,7 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
     evidence:
-      'wwjs GroupChat.setDescription(description) → boolean (index.d.ts:1984; false → adapter throws EngineRefusedError); baileys groupUpdateDescription(jid, description?) (Socket/groups.d.ts:21)',
+      "wwjs GroupChat.setDescription(description) → boolean (index.d.ts:1984; false → adapter throws EngineRefusedError) — depends on 🔧⁹ (scripts/patch-wwebjs-group-description.js): stock 1.34.7 calls the page's WAWebGroupModifyInfoJob.setGroupDescription positionally, but that job now takes a single options object {desc, groupWid, newDescId, prevDescId}, so widToGroupJid reads an undefined Wid and throws inside the page, reaching the caller as a bare 500. setGroupSubject in the same module is still positional and is unaffected. Patched call measured live on wwjs 1.34.7: set reads back, empty string clears. baileys groupUpdateDescription(jid, description?) (Socket/groups.d.ts:21)",
   },
   setGroupEphemeral: {
     wwjs: { status: 'not-available', rootCause: 'library-limitation' },

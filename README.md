@@ -43,6 +43,16 @@ Built on a **pluggable architecture**, OpenWA lets you select database engines (
 | 🧩 **Official Plugins**       | Chatwoot, Typebot & more as sandboxed plugins on the Integration Fabric — [OpenWA-plugins](https://github.com/rmyndharis/OpenWA-plugins) |
 | 🔗 **n8n Integration**        | Community nodes for workflow automation                                                                                                  |
 | 🧩 **Community Adapters**     | Third-party integrations (e.g. ioBroker) — see [docs](./docs/23-community-integrations.md)                                               |
+| 🔐 **Session-scoped keys**    | Operator and viewer (reader) tokens can be limited to chosen sessions — or all sessions if none are selected                             |
+
+### Session-scoped operator & viewer tokens
+
+When you create or edit an **operator** or **viewer** API key in the dashboard, you can tick the WhatsApp sessions that key may use.
+
+- **No sessions selected** — the key can access every session, including ones created later.
+- **One or more sessions selected** — the key can only list, read, and (for operator) manage those sessions. A request naming any other session returns `401`; session-filtered lists (sessions, audit, webhook delivery failures) return that key's rows rather than an error; and the key-management routes and the queue dashboard, which name no session at all, return `403`.
+
+Admin keys stay unscoped in the dashboard so they can keep managing other API keys. The HTTP API still accepts `allowedSessions` on any role if you need that from a client.
 
 ---
 
@@ -119,7 +129,7 @@ For any deployment where ethical, legal, or regulatory compliance matters (healt
 | ------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Groups API          | ✅     | Create, manage, join (invite code), and configure groups                                                                                                                     |
 | Profile Management  | ✅     | Set own display name, about text, and profile picture                                                                                                                        |
-| Call Handling       | ✅     | `call.received` events, reject calls, per-session auto-reject                                                                                                                |
+| Call Handling       | ✅     | `call.received` events, reject calls, per-session auto-reject (Baileys only: whatsapp-web.js no longer detects a ringing call)                                               |
 | Channels/Newsletter | ✅     | WhatsApp Channels support                                                                                                                                                    |
 | Labels Management   | ✅     | Organize chats with labels                                                                                                                                                   |
 | Proxy Support       | ✅     | Per-session proxy configuration                                                                                                                                              |

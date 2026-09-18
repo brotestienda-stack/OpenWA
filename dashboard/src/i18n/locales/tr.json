@@ -11,6 +11,7 @@
     "cancel": "İptal",
     "delete": "Sil",
     "create": "Oluştur",
+    "save": "Save",
     "close": "Kapat",
     "showApiKey": "API anahtarını göster",
     "hideApiKey": "API anahtarını gizle",
@@ -87,6 +88,8 @@
     "unreadBadge": "{{count}} okunmamış mesaj",
     "unreadBadge_other": "{{count}} okunmamış mesaj",
     "loadingMessages": "Mesajlar yükleniyor...",
+    "loadingOlderMessages": "Daha eski mesajlar yükleniyor...",
+    "loadOlderMessagesError": "Daha eski mesajlar yüklenemedi. Tekrar denemek için yukarı kaydırın.",
     "noMessagesInChat": "Henüz mesaj yok. Başlamak için ilk mesajı gönderin!",
     "downloadDocument": "Belgeyi indir",
     "actions": {
@@ -244,6 +247,7 @@
   "sessions": {
     "title": "Oturumlar",
     "subtitle": "WhatsApp oturumlarınızı ve QR kodu bağlantılarınızı yönetin",
+    "feedDisconnected": "Canlı güncellemeler kesildi",
     "newSession": "Yeni Oturum",
     "searchPlaceholder": "Oturumlarda ara...",
     "filter": {
@@ -281,7 +285,8 @@
     },
     "start": {
       "teardownPendingTitle": "Oturum Başlatılıyor",
-      "teardownPending": "Bu oturum için bir kimlik bilgisi sıfırlama işlemi devam ediyor. Lütfen biraz bekleyip tekrar deneyin."
+      "teardownPending": "Bu oturum için bir kimlik bilgisi sıfırlama işlemi devam ediyor. Lütfen biraz bekleyip tekrar deneyin.",
+      "errorTitle": "Başlatma Başarısız"
     },
     "qr": {
       "title": "QR Kodunu Tara",
@@ -305,10 +310,28 @@
       "created": "Oluşturuldu",
       "lastActive": "Son Görülme",
       "autoRejectCalls": "Aramaları otomatik reddet",
-      "autoRejectCallsHint": "Gelen aramalar çaldığı anda reddedilir. call.received webhook'u yine de ilk olarak tetiklenir. Bir sonraki arama için geçerlidir — yeniden başlatma gerekmez."
+      "autoRejectCallsHint": "Gelen aramalar çaldığı anda reddedilir. call.received webhook'u yine de ilk olarak tetiklenir. Bir sonraki arama için geçerlidir — yeniden başlatma gerekmez. Yalnızca Baileys motorunda: whatsapp-web.js artık çalan aramaları algılamıyor."
+    },
+    "proxy": {
+      "title": "Proxy Configuration",
+      "status": "Current",
+      "enabled": "Use proxy",
+      "url": "Proxy URL",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "urlKeepPlaceholder": "Enter new URL to replace {{host}} (credentials not shown)",
+      "configured": "{{host}} ({{type}})",
+      "noProxy": "No proxy configured",
+      "hasCredentials": "Credentials are stored but not shown. Enter a full URL to change them.",
+      "hint": "Changes apply on the next session start, not to a running connection. The proxy must be real and reachable — an unreachable value blocks QR delivery and start returns 504.",
+      "createHint": "Only needed when your network cannot reach WhatsApp directly. Must be a real, reachable proxy.",
+      "invalidUrl": "Enter a valid http, https, socks4, or socks5 proxy URL.",
+      "saveSuccessTitle": "Proxy Saved",
+      "saveSuccess": "Proxy settings saved. They apply on the next session start.",
+      "saveError": "Failed to save proxy settings"
     },
     "actions": {
       "view": "Görüntüle",
+      "proxy": "Proxy",
       "start": "Başlat",
       "stop": "Durdur",
       "reconnect": "Yeniden Bağlan",
@@ -412,6 +435,7 @@
         "body": "Mesaj içeriği",
         "type": "Mesaj türü",
         "isGroup": "Grup sohbeti mi",
+        "kind": "Chat kind",
         "fromMe": "Benim tarafımdan gönderildi",
         "hasMedia": "Medya içeriyor",
         "mentions": "Bahsetmeler"
@@ -495,7 +519,10 @@
       "title": "Kayıtlı şablon yok",
       "description": "Sık kullanılan yanıtları ve bildirimleri hızlandırmak için yeniden kullanılabilir bir şablon oluşturun.",
       "noSessionsTitle": "Kullanılabilir oturum yok",
-      "noSessionsDesc": "Şablon eklemeden önce bir WhatsApp oturumu oluşturun."
+      "noSessionsDesc": "Şablon eklemeden önce bir WhatsApp oturumu oluşturun.",
+      "loadErrorTitle": "Şablonlar yüklenemedi",
+      "forbiddenTitle": "Şablonlara erişim yok",
+      "forbiddenDesc": "Şablonlar, operatör veya yönetici rolüne sahip bir API anahtarı gerektirir."
     },
     "toasts": {
       "created": "Şablon başarıyla oluşturuldu",
@@ -533,7 +560,8 @@
       "role": "Rol",
       "status": "Durum",
       "lastUsed": "Son Kullanım",
-      "actions": "İşlemler"
+      "actions": "İşlemler",
+      "sessions": "Oturumlar"
     },
     "statuses": {
       "active": "Aktif",
@@ -554,7 +582,19 @@
     "actions": {
       "copy": "Kopyala",
       "revoke": "Geçersiz Kıl",
-      "delete": "Sil"
+      "delete": "Sil",
+      "editSessions": "Oturumları düzenle"
+    },
+    "sessions": {
+      "label": "Oturum erişimi",
+      "hint": "Bu anahtarın kullanabileceği oturumları seçin.",
+      "all": "Tüm oturumlar",
+      "empty": "Henüz oturum yok. Oturumlar oluşunca bu anahtar hepsine erişebilir.",
+      "restricted": "{{count}} seçildi",
+      "editTitle": "Oturum erişimini düzenle",
+      "save": "Kaydet",
+      "choose": "Oturumları seç",
+      "leaveAll": "Tüm oturumlar için bırak"
     }
   },
   "logs": {
@@ -623,6 +663,7 @@
     "removeFile": "Dosyayı kaldır",
     "fileReadError": "Dosya okunamadı",
     "fileTooLarge": "Dosya çok büyük (maks 18 MB)",
+    "recipientsFileTooLarge": "Alıcı dosyası çok büyük (maks 2 MB)",
     "caption": "Açıklama",
     "filename": "Dosya Adı",
     "captionPlaceholder": "Açıklama girin...",
@@ -650,6 +691,7 @@
     "forwardMessageId": "Mesaj ID'si",
     "forwardMessageIdHint": "İletilecek mesajın ID'si",
     "bulkRecipients": "Alıcılar",
+    "bulkRecipientsUpload": "CSV/TXT Yükle",
     "bulkRecipientsPlaceholder": "+905XXXXXXXXX",
     "bulkRecipientsHint": "Her satıra bir telefon numarası veya sohbet ID'si (maks 100)",
     "bulkRecipientsCount": "Alıcılar: {{count}}",
@@ -887,6 +929,7 @@
       "title": "Örnekler (Instances)",
       "description": "Bu entegrasyon için hesap başına örnekler tanımlayın. Her örneğin kendi imzalama gizli anahtarı ve giriş URL'si vardır.",
       "create": "Örnek oluştur",
+      "save": "Save",
       "empty": "Henüz örnek yok. Giriş URL'si ve gizli anahtar almak için bir tane oluşturun.",
       "loadError": "Örnekler yüklenemedi.",
       "allSessions": "Tüm oturumlar",

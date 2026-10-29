@@ -4,8 +4,8 @@
  *
  * `check-sdk-routes` asks: does every route an SDK builds exist in the contract? That catches a
  * renamed route. It cannot catch a route the gateway publishes that no client ever got, because
- * nothing is there to scan. Ten routes reached `main` that way — five found by an audit, five more
- * found by writing this file, all of them added in the release that announced them.
+ * nothing is there to scan. Ten routes reached `main` that way, all of them added in the release
+ * that announced them.
  *
  * So this asks the other question: does every route the contract publishes, minus the resources
  * `sdk/README.md` declares unexposed, have a method in EVERY SDK?
@@ -15,7 +15,11 @@
  * client, not just the route.
  *
  * SCOPE, stated so the guarantee is not read wider than it is:
- *   - Asserts a route is REACHABLE from each client, not that its method, body or response match.
+ *   - Asserts a route is REACHABLE from each client, that each verb of a multi-verb route is built,
+ *     and that no verb/path pair the verb scan harvests uses a verb the contract does not declare;
+ *     not that its body or response match. A call the scan cannot pair with its path (the messages
+ *     send-<type> helpers, binary downloads, Go's service helpers and `path :=` variables) is not
+ *     verb-checked, so a wrong verb on a single-verb route built that way passes.
  *   - The exclusion list is PARSED from sdk/README.md, so the gate and the promise cannot drift.
  *
  * The harvester is deliberately GENEROUS: it over-approximates what each client builds. That is the
@@ -25,9 +29,10 @@
  *
  * Run locally: `npm run check:sdk-coverage`.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isUnexposedPath, unexposedResources } from './check-contract-shapes.mjs';
 
 // fileURLToPath, not URL.pathname: the latter stays percent-encoded, so a checkout under a path
 // containing a space resolves to a directory that does not exist and every read here fails with
@@ -164,26 +169,6 @@ const SDKS = [
 ];
 
 /**
- * The resources sdk/README.md declares deliberately unexposed, read from the README rather than
- * restated here: a hand-copied second list is the thing this whole line of work keeps finding.
- */
-function excludedResources() {
-  const readme = readFileSync(join(root, 'sdk/README.md'), 'utf8');
-  const start = readme.indexOf('Deliberately **not** exposed');
-  const end = readme.indexOf('Everything else the gateway publishes', start);
-  if (start < 0 || end < 0) {
-    throw new Error('sdk/README.md: could not find the "Deliberately not exposed" paragraph — the gate cannot derive its exclusion list.');
-  }
-  const names = [...readme.slice(start, end).matchAll(/`([^`]+)`/g)].map((m) => m[1].split('/')[0].trim());
-  if (names.length < 8) throw new Error(`sdk/README.md: parsed only ${names.length} excluded resources, expected the full list.`);
-  return new Set(names);
-}
-
-// The resource a path belongs to: the segment after `/api/`, or after a session id.
-const resourceOf = (path) =>
-  /^\/api\/sessions\/\*\/([^/]+)/.exec(path)?.[1] ?? /^\/api\/([^/*]+)/.exec(path)?.[1] ?? '';
-
-/**
  * A harvested path whose final segment is a wildcard MAY cover its concrete siblings: the client
  * reaches that family through one builder with the last segment as a variable (`send-${type}`).
  * The forward gate makes the same concession explicitly.
@@ -202,15 +187,14 @@ const covers = (built, path) => {
   return isRouteNameFamily(family) && built.families.has(family);
 };
 
-const excluded = excludedResources();
+// Read the way the shape gate reads it (entries as written, a parenthetical ignored, `auth/api-keys` a path
+// prefix): cutting every entry to its first segment made all of /api/auth unexposed, key validation included.
+const excluded = unexposedResources(readFileSync(join(root, 'sdk/README.md'), 'utf8'));
 const contract = [...new Set(Object.keys(JSON.parse(readFileSync(join(root, 'openapi.json'), 'utf8')).paths).map(normalize))];
 /** Every shape the contract publishes, including the excluded resources — a wildcard is explained by
  *  a by-id route whether or not the SDKs are asked to expose it. */
 const contractShapes = new Set(contract);
-const inScope = contract.filter((p) => {
-  const resource = resourceOf(p);
-  return !excluded.has(resource) && !excluded.has(resource.replace(/-rules$/, ''));
-});
+const inScope = contract.filter((p) => !isUnexposedPath(p, excluded));
 
 const errors = [];
 const built = {};
@@ -247,9 +231,12 @@ if (!errors.length) {
 // The path layer above proves each client REACHES a route; a shared path can still miss a VERB
 // entirely; the profile-picture route carried PUT in every client while its DELETE shipped in
 // none, and the path gate stayed green because the PUT satisfied it. This layer asks the verb
-// question: for every contract path published with MORE THAN ONE verb, each client must build
-// that path with every verb the contract declares on it. Multi-verb paths only; a single-verb
-// path is already fully proven by the layer above.
+// question in both directions. For every contract path published with MORE THAN ONE verb, each
+// client must build that path with every verb the contract declares on it. And every verb a client
+// builds on a contract path must be one the contract declares there, which is what covers the
+// single-verb paths: the path layer only proves the path is reached, never with which verb. That
+// second check sees only the pairs harvested below; a call the scan cannot pair with its path (see
+// the SCOPE note at the top) is not checked.
 const VERBS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
 /** Join a concatenated path expression: literals verbatim, code between them becomes a `*`. */
@@ -309,6 +296,23 @@ const goVerbPairs = (dir) => {
   return pairs;
 };
 
+/**
+ * Python splits one path across adjacent literals (`f"/api/sessions/{a}/groups/{b}"` then
+ * `"/membership-requests/approve"`), which it concatenates implicitly; join them.
+ */
+export const joinPythonLiterals = (expr) => [...expr.matchAll(/"([^"]*)"/g)].map((m) => m[1]).join('');
+
+/** The `VERB path` pairs a client builds on a contract path that does not declare that verb. */
+export function undeclaredVerbPairs(sdkName, pairs, specByPath) {
+  const out = [];
+  for (const pair of pairs) {
+    const [verb, path] = pair.split(' ');
+    const operations = specByPath.get(path);
+    if (operations && !operations[verb.toLowerCase()]) out.push(`${verb} ${path}: built by ${sdkName}, not declared by the contract`);
+  }
+  return out;
+}
+
 const verbPairsOf = (sdk) => {
   if (sdk.name === 'go') return goVerbPairs(join(root, sdk.dir));
   const pairs = new Set();
@@ -318,13 +322,13 @@ const verbPairsOf = (sdk) => {
       sdk.name === 'javascript'
         ? [/(GET|POST|PUT|PATCH|DELETE)'\s*,\s*[\s\S]{0,80}?path:\s*[`'"]([^`'"]+)[`'"]/g]
         : sdk.name === 'python'
-          ? [/\.request\(\s*"(GET|POST|PUT|PATCH|DELETE)"\s*,\s*f?"([^"]+)"/g]
+          ? [/\.request\(\s*"(GET|POST|PUT|PATCH|DELETE)"\s*,\s*((?:f?"[^"\n]*"\s*)+)/g]
           : sdk.name === 'php'
             ? [/->request\(\s*'(GET|POST|PUT|PATCH|DELETE)'\s*,\s*['"]([^'"]+)['"]/g]
             : [/HttpMethod\.(GET|POST|PUT|PATCH|DELETE)\s*,\s*([\s\S]{2,400}?)\s*,\s*\n?\s*(?:null|new |[a-z]\w)/g];
     for (const re of patterns) {
       for (const m of src.matchAll(re)) {
-        const path = sdk.name === 'java' ? literalsToPath(m[2]) : m[2];
+        const path = sdk.name === 'java' ? literalsToPath(m[2]) : sdk.name === 'python' ? joinPythonLiterals(m[2]) : m[2];
         if (path && path.startsWith('/api/')) pairs.add(`${m[1]} ${normalize(path)}`);
       }
     }
@@ -332,7 +336,9 @@ const verbPairsOf = (sdk) => {
   return pairs;
 };
 
-{
+// A spec imports the helpers above; only a direct run reports and exits. argv[1] is realpathed because
+// Node realpaths the main module's URL: through a symlinked path the two never matched and nothing ran.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const spec = JSON.parse(readFileSync(join(root, 'openapi.json'), 'utf8')).paths;
   // Same scope as the path layer: resources the README declares unexposed are not the SDKs' to build.
   const specByPath = new Map(Object.entries(spec).map(([k, v]) => [normalize(k), v]));
@@ -351,23 +357,25 @@ const verbPairsOf = (sdk) => {
         if (!pairs.has(`${verb} ${path}`)) verbErrors.push(`${verb} ${path} — declared by the contract, built by no ${sdk.name} method`);
       }
     }
+    // Checked against the whole contract: a client that builds an excluded route still owes it a real verb.
+    verbErrors.push(...undeclaredVerbPairs(sdk.name, pairs, specByPath));
   }
   if (multi.length < 15) {
     console.error('check-sdk-coverage: expected 15+ in-scope multi-verb contract paths, found ' + multi.length);
     process.exit(1);
   }
   if (verbErrors.length) {
-    console.error('\n✖ Verbs missing from SDK methods on shared paths:');
+    console.error('\n✖ SDK verbs disagree with the contract:');
     for (const e of verbErrors) console.error(`  - ${e}`);
     process.exit(1);
   }
-}
 
-if (errors.length) {
-  console.error('\n✖ The contract publishes routes the SDKs do not expose:');
-  for (const e of errors) console.error(`  - ${e}`);
-  console.error('\nsdk/README.md promises that everything outside its excluded set is exposed.');
-  console.error('Add the client method, or add the resource to that list with a reason.\n');
-  process.exit(1);
+  if (errors.length) {
+    console.error('\n✖ The contract publishes routes the SDKs do not expose:');
+    for (const e of errors) console.error(`  - ${e}`);
+    console.error('\nsdk/README.md promises that everything outside its excluded set is exposed.');
+    console.error('Add the client method, or add the resource to that list with a reason.\n');
+    process.exit(1);
+  }
+  console.log(`✓ SDK contract coverage OK (${inScope.length} in-scope contract paths reachable from all ${SDKS.length} clients).`);
 }
-console.log(`✓ SDK contract coverage OK (${inScope.length} in-scope contract paths reachable from all ${SDKS.length} clients).`);

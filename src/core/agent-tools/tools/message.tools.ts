@@ -1,7 +1,10 @@
 import { z } from 'zod';
+import { isMediaUrl, MEDIA_URL_MESSAGE } from '../../../common/media/media-url';
 import { ApiKeyRole } from '../../../modules/auth/entities/api-key.entity';
+import { stripBase64DataUri } from '../../../modules/message/media-cap.util';
 import type { MessageService } from '../../../modules/message/message.service';
 import {
+  CHAT_ID_MAX_LENGTH,
   CUSTOM_PREVIEW_DESCRIPTION_MAX_LENGTH,
   CUSTOM_PREVIEW_TITLE_MAX_LENGTH,
   CUSTOM_PREVIEW_URL_MAX_LENGTH,
@@ -16,6 +19,7 @@ import {
   LOCATION_TEXT_MAX_LENGTH,
   REACTION_EMOJI_MAX_LENGTH,
 } from '../../../modules/message/dto/message-actions.dto';
+import { chatIdSchema, chatJidSchema } from '../chat-id-schema';
 import { defineTool, type AnyToolDescriptor } from '../tool-descriptor';
 
 const sessionId = z.string().min(1).describe('Session UUID (the session id, not the name)');
@@ -32,6 +36,18 @@ const quotedMessageIdSchema = z
     'Quote an earlier message, making this send a reply. Engine-specific: whatsapp-web.js takes ' +
       'the serialized message id, Baileys the raw key id of a message it has already stored.',
   );
+
+const mediaUrl = (label: string) => z.string().optional().describe(`${label} URL (http/https)`);
+
+/**
+ * The same media url rule as the REST routes: both engines fetch only a string that starts with
+ * http(s):// and decode anything else as base64, so any other value would go out as garbage bytes.
+ * It is checked with the whole body, as the REST DTO does: base64 that holds data wins, so a url left
+ * next to it (often an empty string from an agent filling every optional field) is neither fetched nor
+ * an error.
+ */
+const hasValidMediaUrl = (input: { url?: string; base64?: string }): boolean =>
+  !!stripBase64DataUri(input.base64) || input.url === undefined || isMediaUrl(input.url);
 
 /**
  * Mirrors the REST `mentions` field. The element rule and both caps come from the DTO rather than
@@ -76,13 +92,14 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
   return [
     defineTool({
       name: 'MessageList',
+      chatScope: ['chatId'],
       description:
         'List persisted messages for a session, optionally filtered by chatId or sender. Reads from the local DB.',
       tier: 'read',
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().optional().describe('Filter to a specific chat JID'),
+        chatId: z.string().max(CHAT_ID_MAX_LENGTH).optional().describe('Filter to a specific chat JID'),
         from: z.string().optional().describe('Filter by sender phone or JID'),
         limit: z.number().int().min(1).max(100).optional(),
         offset: z.number().int().min(0).optional(),
@@ -97,13 +114,15 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageHistory',
+      chatScope: ['chatId'],
       description:
-        'Fetch live chat history from WhatsApp for a specific chat. Bypasses the local DB — useful for messages that arrived before the gateway started.',
+        'Fetch live chat history from WhatsApp for a specific chat. Bypasses the local DB — useful for messages that arrived before the gateway started. ' +
+        'Requires the whatsapp-web.js engine; Baileys answers 501 and a retry cannot succeed, so use MessageList for stored messages.',
       tier: 'read',
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().describe('Chat JID (e.g. 1234567890@c.us or groupId@g.us)'),
+        chatId: chatIdSchema.describe('Chat JID (e.g. 1234567890@c.us or groupId@g.us)'),
         limit: z
           .number()
           .int()
@@ -114,30 +133,34 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
         includeMedia: z.boolean().optional().describe('Download media as base64 (slower)'),
         deep: z.boolean().optional().describe('Raise limit ceiling to 2000 for reaching further back in history'),
       }),
-      handler: input =>
-        message.getChatHistory(input.sessionId, input.chatId, input.limit, input.includeMedia, input.deep),
+      handler: (input, _apiKey, _chatScope, signal) =>
+        message.getChatHistory(input.sessionId, input.chatId, input.limit, input.includeMedia, input.deep, signal),
     }),
     defineTool({
       name: 'MessageGetReactions',
-      description: 'Get reactions for a specific message, including which contacts sent which emoji.',
+      chatScope: ['chatId'],
+      description:
+        'Get reactions for a specific message, including which contacts sent which emoji. ' +
+        'Requires the whatsapp-web.js engine; Baileys answers 501 and a retry cannot succeed.',
       tier: 'read',
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().describe('Chat JID containing the message'),
-        messageId: z.string().describe('Message ID to get reactions for'),
+        chatId: chatIdSchema.describe('Chat JID containing the message'),
+        messageId: z.string().min(1).describe('Message ID to get reactions for'),
       }),
       handler: input => message.getMessageReactions(input.sessionId, input.chatId, input.messageId),
     }),
     defineTool({
       name: 'MessageSendText',
+      chatScope: ['chatId'],
       description: 'Send a plain text message to a chat or group. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().describe('Chat JID (e.g. 628123456789@c.us or groupId@g.us)'),
+        chatId: chatJidSchema.describe('Chat JID (e.g. 628123456789@c.us or groupId@g.us)'),
         text: z.string().min(1).max(MESSAGE_TEXT_MAX_LENGTH).describe('Text message content'),
         linkPreview: z
           .boolean()
@@ -162,21 +185,24 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageSendImage',
+      chatScope: ['chatId'],
       description: 'Send an image message via URL or base64. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
-      inputSchema: z.object({
-        sessionId,
-        chatId: z.string().describe('Chat JID'),
-        url: z.string().url().optional().describe('Image URL (http/https)'),
-        base64: z.string().optional().describe('Base64-encoded image data'),
-        mimetype: z.string().optional().describe('MIME type (required when using base64)'),
-        filename: z.string().max(255).optional(),
-        caption: z.string().max(1024).optional(),
-        quotedMessageId: quotedMessageIdSchema,
-        mentions: mentionsSchema,
-      }),
+      inputSchema: z
+        .object({
+          sessionId,
+          chatId: chatJidSchema.describe('Chat JID'),
+          url: mediaUrl('Image'),
+          base64: z.string().optional().describe('Base64-encoded image data'),
+          mimetype: z.string().optional().describe('MIME type (required when using base64)'),
+          filename: z.string().max(255).optional(),
+          caption: z.string().max(1024).optional(),
+          quotedMessageId: quotedMessageIdSchema,
+          mentions: mentionsSchema,
+        })
+        .refine(hasValidMediaUrl, { error: MEDIA_URL_MESSAGE, path: ['url'] }),
       handler: input =>
         message.sendImage(input.sessionId, {
           chatId: input.chatId,
@@ -191,21 +217,24 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageSendVideo',
+      chatScope: ['chatId'],
       description: 'Send a video message via URL or base64. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
-      inputSchema: z.object({
-        sessionId,
-        chatId: z.string().describe('Chat JID'),
-        url: z.string().url().optional().describe('Video URL (http/https)'),
-        base64: z.string().optional().describe('Base64-encoded video data'),
-        mimetype: z.string().optional().describe('MIME type (required when using base64)'),
-        filename: z.string().max(255).optional(),
-        caption: z.string().max(1024).optional(),
-        quotedMessageId: quotedMessageIdSchema,
-        mentions: mentionsSchema,
-      }),
+      inputSchema: z
+        .object({
+          sessionId,
+          chatId: chatJidSchema.describe('Chat JID'),
+          url: mediaUrl('Video'),
+          base64: z.string().optional().describe('Base64-encoded video data'),
+          mimetype: z.string().optional().describe('MIME type (required when using base64)'),
+          filename: z.string().max(255).optional(),
+          caption: z.string().max(1024).optional(),
+          quotedMessageId: quotedMessageIdSchema,
+          mentions: mentionsSchema,
+        })
+        .refine(hasValidMediaUrl, { error: MEDIA_URL_MESSAGE, path: ['url'] }),
       handler: input =>
         message.sendVideo(input.sessionId, {
           chatId: input.chatId,
@@ -220,22 +249,25 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageSendAudio',
+      chatScope: ['chatId'],
       description: 'Send an audio/voice message via URL or base64. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
-      inputSchema: z.object({
-        sessionId,
-        chatId: z.string().describe('Chat JID'),
-        url: z.string().url().optional().describe('Audio URL (http/https)'),
-        base64: z.string().optional().describe('Base64-encoded audio data'),
-        mimetype: z.string().optional().describe('MIME type (required when using base64)'),
-        filename: z.string().max(255).optional(),
-        caption: z.string().max(1024).optional(),
-        ptt: z.boolean().optional().describe('Send as a WhatsApp voice note (PTT)'),
-        quotedMessageId: quotedMessageIdSchema,
-        mentions: mentionsSchema,
-      }),
+      inputSchema: z
+        .object({
+          sessionId,
+          chatId: chatJidSchema.describe('Chat JID'),
+          url: mediaUrl('Audio'),
+          base64: z.string().optional().describe('Base64-encoded audio data'),
+          mimetype: z.string().optional().describe('MIME type (required when using base64)'),
+          filename: z.string().max(255).optional(),
+          caption: z.string().max(1024).optional(),
+          ptt: z.boolean().optional().describe('Send as a WhatsApp voice note (PTT)'),
+          quotedMessageId: quotedMessageIdSchema,
+          mentions: mentionsSchema,
+        })
+        .refine(hasValidMediaUrl, { error: MEDIA_URL_MESSAGE, path: ['url'] }),
       handler: input =>
         message.sendAudio(input.sessionId, {
           chatId: input.chatId,
@@ -251,21 +283,24 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageSendDocument',
+      chatScope: ['chatId'],
       description: 'Send a document/file message via URL or base64. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
-      inputSchema: z.object({
-        sessionId,
-        chatId: z.string().describe('Chat JID'),
-        url: z.string().url().optional().describe('Document URL (http/https)'),
-        base64: z.string().optional().describe('Base64-encoded document data'),
-        mimetype: z.string().optional().describe('MIME type (required when using base64)'),
-        filename: z.string().max(255).optional(),
-        caption: z.string().max(1024).optional(),
-        quotedMessageId: quotedMessageIdSchema,
-        mentions: mentionsSchema,
-      }),
+      inputSchema: z
+        .object({
+          sessionId,
+          chatId: chatJidSchema.describe('Chat JID'),
+          url: mediaUrl('Document'),
+          base64: z.string().optional().describe('Base64-encoded document data'),
+          mimetype: z.string().optional().describe('MIME type (required when using base64)'),
+          filename: z.string().max(255).optional(),
+          caption: z.string().max(1024).optional(),
+          quotedMessageId: quotedMessageIdSchema,
+          mentions: mentionsSchema,
+        })
+        .refine(hasValidMediaUrl, { error: MEDIA_URL_MESSAGE, path: ['url'] }),
       handler: input =>
         message.sendDocument(input.sessionId, {
           chatId: input.chatId,
@@ -280,13 +315,14 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageSendLocation',
+      chatScope: ['chatId'],
       description: 'Send a location pin message. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().describe('Chat JID'),
+        chatId: chatJidSchema.describe('Chat JID'),
         latitude: z.number().min(-90).max(90).describe('Latitude coordinate'),
         longitude: z.number().min(-180).max(180).describe('Longitude coordinate'),
         description: z.string().max(LOCATION_TEXT_MAX_LENGTH).optional().describe('Location label/description'),
@@ -305,13 +341,14 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageSendContact',
+      chatScope: ['chatId'],
       description: 'Send a contact card message. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().describe('Chat JID'),
+        chatId: chatJidSchema.describe('Chat JID'),
         contactName: z.string().min(1).max(CONTACT_NAME_MAX_LENGTH).describe('Display name of the contact to share'),
         contactNumber: z
           .string()
@@ -330,21 +367,24 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageSendSticker',
+      chatScope: ['chatId'],
       description: 'Send a sticker message via URL or base64. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
-      inputSchema: z.object({
-        sessionId,
-        chatId: z.string().describe('Chat JID'),
-        url: z.string().url().optional().describe('Sticker URL (http/https)'),
-        base64: z.string().optional().describe('Base64-encoded sticker data'),
-        mimetype: z.string().optional().describe('MIME type (required when using base64)'),
-        filename: z.string().max(255).optional(),
-        caption: z.string().max(1024).optional(),
-        quotedMessageId: quotedMessageIdSchema,
-        mentions: mentionsSchema,
-      }),
+      inputSchema: z
+        .object({
+          sessionId,
+          chatId: chatJidSchema.describe('Chat JID'),
+          url: mediaUrl('Sticker'),
+          base64: z.string().optional().describe('Base64-encoded sticker data'),
+          mimetype: z.string().optional().describe('MIME type (required when using base64)'),
+          filename: z.string().max(255).optional(),
+          caption: z.string().max(1024).optional(),
+          quotedMessageId: quotedMessageIdSchema,
+          mentions: mentionsSchema,
+        })
+        .refine(hasValidMediaUrl, { error: MEDIA_URL_MESSAGE, path: ['url'] }),
       handler: input =>
         message.sendSticker(input.sessionId, {
           chatId: input.chatId,
@@ -359,6 +399,7 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageSendTemplate',
+      chatScope: ['chatId'],
       description:
         'Render a stored text template and send it as a text message. Provide either templateId or templateName. Requires OPERATOR role.',
       tier: 'write',
@@ -366,7 +407,7 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().describe('Chat JID'),
+        chatId: chatJidSchema.describe('Chat JID'),
         templateId: z.string().optional().describe('Template UUID'),
         templateName: z.string().optional().describe('Template name slug'),
         vars: z
@@ -386,14 +427,16 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageReply',
+      chatQuotedAllowed: true,
+      chatScope: ['chatId'],
       description: 'Reply to a specific message (quoted reply). Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().describe('Chat JID'),
-        quotedMessageId: z.string().describe('ID of the message to quote/reply to'),
+        chatId: chatJidSchema.describe('Chat JID'),
+        quotedMessageId: z.string().min(1).describe('ID of the message to quote/reply to'),
         text: z.string().min(1).max(MESSAGE_TEXT_MAX_LENGTH).describe('Reply text content'),
         mentions: mentionsSchema,
       }),
@@ -407,15 +450,16 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageForward',
+      chatScope: ['fromChatId', 'toChatId'],
       description: 'Forward a message from one chat to another. Requires OPERATOR role.',
       tier: 'write',
       requiredRole: ApiKeyRole.OPERATOR,
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        fromChatId: z.string().describe('Source chat JID'),
-        toChatId: z.string().describe('Destination chat JID'),
-        messageId: z.string().describe('ID of the message to forward'),
+        fromChatId: chatJidSchema.describe('Source chat JID'),
+        toChatId: chatJidSchema.describe('Destination chat JID'),
+        messageId: z.string().min(1).describe('ID of the message to forward'),
       }),
       handler: input =>
         message.forward(input.sessionId, {
@@ -426,6 +470,7 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
     }),
     defineTool({
       name: 'MessageReact',
+      chatScope: ['chatId'],
       description:
         'Add or remove a reaction emoji on a message. Send empty string emoji to remove. Requires OPERATOR role.',
       tier: 'write',
@@ -433,8 +478,8 @@ export function messageTools(message: MessageService): AnyToolDescriptor[] {
       sessionScoped: true,
       inputSchema: z.object({
         sessionId,
-        chatId: z.string().describe('Chat JID containing the message'),
-        messageId: z.string().describe('ID of the message to react to'),
+        chatId: chatJidSchema.describe('Chat JID containing the message'),
+        messageId: z.string().min(1).describe('ID of the message to react to'),
         emoji: z
           .string()
           .max(REACTION_EMOJI_MAX_LENGTH)

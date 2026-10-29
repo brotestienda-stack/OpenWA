@@ -3,6 +3,9 @@ import { lookup } from 'dns/promises';
 import { type LookupAddress, type LookupOptions } from 'dns';
 import { Agent, fetch as undiciFetch, Headers, type Dispatcher, type RequestInit, type Response } from 'undici';
 import { createProxyDispatcher } from './proxy-dispatcher';
+import { createLogger } from '../services/logger.service';
+
+const logger = createLogger('SsrfGuard');
 
 /** Thrown when an outbound URL is blocked by the SSRF guard. */
 export class SsrfBlockedError extends Error {
@@ -58,7 +61,14 @@ export function isSsrfProtectionEnabled(): boolean {
  * bypass the block. Matched case-insensitively against the URL hostname.
  */
 function getAllowedHosts(): Set<string> {
-  return new Set(
+  const entries = allowedHostEntries();
+  warnUnusableAllowedHosts(entries);
+  return new Set(entries.filter(Boolean));
+}
+
+/** The SSRF_ALLOWED_HOSTS entries in written order, blanks kept so an entry's position is the one the operator sees. */
+function allowedHostEntries(): string[] {
+  return (
     (process.env.SSRF_ALLOWED_HOSTS ?? '')
       .split(',')
       // Strip IPv6 brackets so an entry copied from a URL (e.g. "[::1]") matches the
@@ -69,8 +79,63 @@ function getAllowedHosts(): Set<string> {
           .replace(/^\[|\]$/g, '')
           .toLowerCase(),
       )
-      .filter(Boolean),
   );
+}
+
+/** What the URL parser makes of an entry used as a host, brackets stripped; null when the parser rejects it. */
+function parsedHostname(entry: string): string | null {
+  try {
+    return new URL(`http://${entry.includes(':') ? `[${entry}]` : entry}/`).hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Why an entry can never equal the hostname of a URL, or undefined when it can. The reason is a shape and never the
+ * value, which may carry credentials. An IP address has to be written the way the URL parser prints it: `http://127.1/`
+ * is compared as `127.0.0.1`, so the entry `127.1` (or `0:0:0:0:0:0:0:1` for `::1`) is never equal.
+ */
+function unusableAllowedHostReason(entry: string): string | undefined {
+  if (entry.includes('@') || entry.includes('://')) return 'a scheme or credentials';
+  if (entry.includes('*')) return 'a wildcard';
+  if (/[/?#]/.test(entry)) return 'a path';
+  if (/^[^:]+:\d*$/.test(entry)) return 'a port';
+  const parsed = parsedHostname(entry);
+  if (parsed === null) return 'a value the URL parser rejects';
+  return parsed === entry ? undefined : 'a spelling the URL parser rewrites';
+}
+
+let warnedUnusableHosts = '';
+
+/** The most entries one warning lists, so a long list of unusable entries cannot flood the log. */
+const MAX_LISTED_UNUSABLE_HOSTS = 20;
+
+/**
+ * An entry is compared with the hostname of the URL, so one the check above names never matches, and the refusal it
+ * was meant to lift only says the destination is not allowed. Name such entries once, by position and reason, at most
+ * MAX_LISTED_UNUSABLE_HOSTS of them, and count the rest.
+ */
+export function warnUnusableAllowedHosts(entries: readonly string[] = allowedHostEntries()): void {
+  const listed: string[] = [];
+  let unusable = 0;
+  entries.forEach((entry, index) => {
+    const reason = entry ? unusableAllowedHostReason(entry) : undefined;
+    if (!reason) return;
+    unusable++;
+    if (listed.length < MAX_LISTED_UNUSABLE_HOSTS) listed.push(`entry ${index + 1} (${reason})`);
+  });
+  const more = unusable - listed.length;
+  const key = more > 0 ? `${listed.join(', ')}; ${more} more are not listed` : listed.join(', ');
+  if (key === warnedUnusableHosts) return;
+  warnedUnusableHosts = key;
+  if (unusable > 0) {
+    logger.warn(
+      'SSRF_ALLOWED_HOSTS entries must be a bare host name or an IP address written as the URL parser prints it ' +
+        `(127.0.0.1, ::1); these never match and are ignored: ${key}` +
+        (more > 0 ? ` (the list shows at most ${MAX_LISTED_UNUSABLE_HOSTS})` : ''),
+    );
+  }
 }
 
 // IPv4 ranges that must never be reachable by an outbound webhook (SSRF targets). Membership is
@@ -190,7 +255,17 @@ export function isBlockedAddress(ip: string): boolean {
       if (hextets[0] === 0x2002) {
         return isBlockedAddress(hextetsToV4(hextets[1], hextets[2])); // 6to4
       }
-      if (hextets[0] === 0x64 && hextets[1] === 0xff9b) {
+      // NAT64 /96: the well-known 64:ff9b::/96 and the local-use 64:ff9b:1::/96 (RFC 8215). Any other
+      // 64:ff9b layout (a /48 local-use prefix embeds the IPv4 in the middle hextets) falls through to
+      // the reserved-range check below and is blocked.
+      if (
+        hextets[0] === 0x64 &&
+        hextets[1] === 0xff9b &&
+        hextets[2] <= 1 &&
+        hextets[3] === 0 &&
+        hextets[4] === 0 &&
+        hextets[5] === 0
+      ) {
         return isBlockedAddress(hextetsToV4(hextets[6], hextets[7])); // NAT64
       }
       if (hextets.slice(0, 6).every(h => h === 0) && (hextets[6] | hextets[7]) !== 0) {
@@ -253,10 +328,13 @@ export function assertNoRedirect(response: { status: number; type?: string }, ur
 /** Default DNS resolution deadline (ms) — generous for healthy resolvers; bounds a hang. */
 const DEFAULT_DNS_TIMEOUT_MS = 10000;
 
+/** Node clamps a longer timer delay to 1 ms, which would fail every lookup at once. */
+const MAX_TIMER_MS = 2147483647;
+
 function resolveDnsTimeoutMs(): number {
   const raw = process.env.SSRF_DNS_TIMEOUT_MS;
   const n = raw !== undefined ? Number(raw) : NaN;
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_DNS_TIMEOUT_MS;
+  return Number.isInteger(n) && n > 0 && n <= MAX_TIMER_MS ? n : DEFAULT_DNS_TIMEOUT_MS;
 }
 
 /** Redirect hops followed on the guarded download path before the chain is refused. */
@@ -311,9 +389,9 @@ async function lookupWithDeadline(host: string, signal?: AbortSignal | null): Pr
  *
  * Returns the vetted resolved addresses so a caller can PIN the connection to them — defeating the
  * DNS-rebinding window where the address validated here differs from the one `fetch` would re-resolve.
- * Returns null when there is nothing to pin: an allowlisted host (trusted — deliberately left
- * unpinned, since the operator opts in to whatever its DNS returns) or a literal IP (no DNS, so no
- * rebind is possible — fetch connects straight to the validated literal).
+ * Hosts in `SSRF_ALLOWED_HOSTS` skip the block check but are still resolved, and their addresses are
+ * returned for pinning, so an allowlisted name cannot rebind after validation. Returns null only for a
+ * literal IP (no DNS, so no rebind is possible; fetch connects straight to the validated literal).
  */
 export async function resolveSafeFetchTarget(
   rawUrl: string,
@@ -464,9 +542,10 @@ function nextRedirectHopInit(init: RequestInit, status: number, nextUrl: string,
  * - Destination PINNING survives only through SOCKS, which carries the destination address in the
  *   request. The whole vetted list goes over, to be dialled in order, so the address-family failover
  *   the direct path gets from happy-eyeballs is not lost to a proxy that can route only one of them.
- *   An HTTP/HTTPS proxy is handed the destination by name in the CONNECT line and resolves it with
- *   its own resolver, so the vetted address cannot be expressed and a DNS rebind between check and
- *   connect is not structurally preventable.
+ *   An HTTP/HTTPS proxy is handed the destination by name (the CONNECT line for an https
+ *   destination, the absolute-form request line for an http one) and resolves it with its own
+ *   resolver, so the vetted address cannot be expressed and a DNS rebind between check and connect
+ *   is not structurally preventable.
  *
  * Without a proxy the behaviour is byte-identical to before: the pinned `Agent` for a vetted
  * hostname, and no dispatcher at all for an IP literal or an unguarded fetch.
@@ -480,12 +559,13 @@ function requestDispatcher(proxyUrl: string | undefined, target: LookupAddress[]
 
 /**
  * Perform an SSRF-safe fetch and hand the response to `use`, then tear down the per-request
- * connection. The host is validated and resolved ONCE; the connection is pinned to the vetted IP(s)
- * via an undici dispatcher so it cannot be re-resolved to an internal address between check and
- * connect (DNS-rebinding TOCTOU). The original hostname is preserved for TLS SNI and the Host header,
- * so virtual hosting and certificate validation are unaffected, and ALL vetted addresses are offered
- * so A-record failover still works (behind a SOCKS proxy the same list is dialled in order, and
- * behind an HTTP/HTTPS proxy the CONNECT line carries the name for the proxy to resolve). Redirects
+ * connection. The host is validated and resolved ONCE; a direct or SOCKS-proxied connection is
+ * pinned to the vetted IP(s) via an undici dispatcher so it cannot be re-resolved to an internal
+ * address between check and connect (DNS-rebinding TOCTOU). The original hostname is preserved for
+ * TLS SNI and the Host header, so virtual hosting and certificate validation are unaffected, and ALL
+ * vetted addresses are offered so A-record failover still works (behind a SOCKS proxy the same list
+ * is dialled in order). Behind an HTTP/HTTPS proxy nothing is pinned: the name goes to the proxy,
+ * which resolves it itself, so that path keeps the check but not the rebind protection. Redirects
  * are refused (the guard only validated the original host).
  *
  * `use` must read everything it needs from the response before returning — the dispatcher (and its

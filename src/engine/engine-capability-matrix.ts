@@ -111,7 +111,7 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
     evidence:
-      "wwjs Client.archiveChat(chatId)/unarchiveChat(chatId) → Promise<boolean> (index.d.ts:46,328) — the CLIENT methods, not Chat.archive(), which resolves void; baileys chatModify({archive,lastMessages}, jid) (Types/Chat.d.ts:63-66) needs the chat's last message, so a chat with no known history resolves false rather than throwing",
+      "wwjs Client.archiveChat(chatId)/unarchiveChat(chatId) → Promise<boolean> (index.d.ts:46,328) — the CLIENT methods, not Chat.archive(), which resolves void; baileys chatModify({archive,lastMessages}, jid) (Types/Chat.d.ts:63-66) keyed to the chat's last message in memory, else the newest stored one, else sent with an empty range for a chat the session knows, which WhatsApp applies as well; an unknown id resolves false",
   },
   getBlockedContacts: {
     wwjs: { status: 'supported' },
@@ -123,7 +123,7 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
     evidence:
-      'wwjs Chat.clearMessages() → boolean (index.d.ts:1896); the injected sendClearChat returns false for an unknown chat (Injected/Utils.js:1220); baileys chatModify({clear:true,lastMessages}, jid) (Types/Chat.d.ts:75-78) — same last-message requirement as archiveChat, so a chat with no known history resolves false',
+      "wwjs Chat.clearMessages() → boolean (index.d.ts:1896); the injected sendClearChat returns false for an unknown chat (Injected/Utils.js:1220); baileys chatModify({clear:true,lastMessages}, jid) (Types/Chat.d.ts:75-78) — keyed to the chat's last message in memory or stored, so a chat with neither resolves false",
   },
   createGroup: {
     wwjs: { status: 'not-available', rootCause: 'library-limitation' },
@@ -218,7 +218,7 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     wwjs: { status: 'supported' },
     baileys: { status: 'not-available', rootCause: 'library-limitation' },
     evidence:
-      'baileys no getLabel/getLabelById in lib/**/*.d.ts (Types/Label.d.ts has only Label interface + LabelColor enum + LabelActionBody); derivable only from an app-state-sync label cache; wwjs Client.getLabelById (Client.js:2838)',
+      'baileys no getLabel/getLabelById in lib/**/*.d.ts (Types/Label.d.ts has only Label interface + LabelColor enum + LabelActionBody); derivable only from an app-state-sync label cache; wwjs picks from Client.getLabels (Client.js:2760), since Client.getLabelById (Client.js:2838) throws page-side for an unknown id',
   },
   getLabels: {
     wwjs: { status: 'supported' },
@@ -272,7 +272,7 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
     evidence:
-      'Both implement it, but not to the same depth, which is what the optional marker on the interface allows: wwjs races a real Client.getState() round trip against a 10s timeout (whatsapp-web-js.adapter.ts:1710) and answers alive inside the bounded navigation re-inject window; baileys returns a local check, status === READY && sock != null (baileys-lifecycle.ts:738), because its keepalive already emits a close event within ~35s. So a wedged wwjs page is caught by the probe, while a wedged baileys socket is caught by the transport rather than here',
+      'Both implement it, but not to the same depth, which is what the optional marker on the interface allows: wwjs races a real Client.getState() round trip against a 10s timeout (WwebjsLifecycle.probeLiveness, wwebjs-lifecycle.ts) and answers alive inside the bounded navigation re-inject window; baileys returns a local check, status === READY && sock != null (BaileysLifecycle.probeLiveness, baileys-lifecycle.ts), because its keepalive already emits a close event within ~35s. So a wedged wwjs page is caught by the probe, while a wedged baileys socket is caught by the transport rather than here',
   },
   promoteParticipants: {
     wwjs: { status: 'supported' },
@@ -299,10 +299,30 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
       'baileys createCallLink(type, {startTime}, timeoutMs) (Socket/chats.d.ts:17) resolves the bare link_create token (Socket/chats.js:586-603), assembled behind CALL_VIDEO_PREFIX / CALL_AUDIO_PREFIX (Defaults/index.d.ts:5-6); wwjs Client.createCallLink(startTime, callType) (index.d.ts:342) resolves the finished link or an empty string (Client.js:3212-3235)',
   },
   rejectCall: {
+    wwjs: { status: 'not-available', rootCause: 'library-limitation' },
+    baileys: { status: 'supported' },
+    evidence:
+      "baileys rejectCall(callId, callFrom) (Socket/messages-recv.d.ts:10) with the raw `from` JID cached from the 'offer' call event (Types/Call.d.ts); measured live on 2026-09-17 with 7.0.0-rc14, a real call fired call.received then call.rejected and auto-reject stopped the caller's phone at once. wwjs Call.reject() exists and is typed Promise<void> (index.d.ts:2417) on the Call from the client 'call' event (index.d.ts:643), but measured live on 2026-09-17 on OpenWA 0.23.4 with WhatsApp Web 2.3000.1047471845-alpha the reject resolved and OpenWA logged the call as auto-rejected while the caller's phone kept ringing until it timed out. The cause is not established. The page function Call.reject() runs, WWebJS.rejectCall, is modified by OpenWA patch 1 (scripts/wwebjs-201832.patch), which reads getMaybeMePnUser()._serialized || $1",
+  },
+  requestPairingCode: {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
     evidence:
-      "wwjs Call.reject() (index.d.ts:2417) on the live Call cached from the client 'call' event (index.d.ts:643); baileys rejectCall(callId, callFrom) (Socket/messages-recv.d.ts:10) with the raw `from` JID cached from the 'offer' call event (Types/Call.d.ts). On current WhatsApp Web builds the wwjs 'call' event no longer fires for a ringing call (measured live on OpenWA 0.14.4 on 2026-08-10, Baileys firing call.received and call.rejected on the same bench), so the wwjs cache is never populated: the cell records the implemented method, and docs/29 29.7 carries the caveat",
+      'Curated for a hazard, not a gap: both engines return a code. wwjs Client.requestPairingCode ' +
+      '(Client.js:516-571) runs in the shared WhatsApp Web page and calls ' +
+      'PairingCodeLinkUtils.setPairingType + initializeAltDeviceLinking before startAltLinkingFlow, ' +
+      'checking no precondition; measured twice (2026-09-17, 2026-09-18) a request for a number that ' +
+      'already had a linked session was followed within about a minute by WhatsApp revoking that ' +
+      'device, whatsapp-web.js deleting its credentials and the session returning to qr_ready. It ' +
+      'also arms an in-page 3-minute re-request interval that mints a fresh code and notifies the ' +
+      'phone on every tick. The interval lives in the page, so it dies with the next WhatsApp Web ' +
+      'reload (roughly every 20s while UNPAIRED) and with the session; the library does expose ' +
+      'cancelPairingCode, but it returns the page to QR mode, which is not what a retry wants. ' +
+      'The gateway answers 409 before asking, on whatsapp-web.js only, for a number that is the stored ' +
+      'phone of another of its sessions; it cannot see a link made on another gateway or only on the phone. ' +
+      'baileys requestPairingCode ' +
+      '(Socket/socket.js:596-650) writes only its own creds and sends one link_code_companion_reg IQ, ' +
+      'with no shared page; no side effect was observed there.',
   },
   sendCatalog: {
     wwjs: { status: 'not-available', rootCause: 'library-limitation' },
@@ -340,6 +360,12 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     evidence:
       'wwjs 1.34.7 exposes NO ephemeral setter — 0 hits for ephemeral in index.d.ts; only a create-time messageTimer option (Client.js:2328); adapter throws EngineNotSupportedError; baileys groupToggleEphemeral(jid, ephemeralExpiration) (Socket/groups.d.ts:40)',
   },
+  setGroupMemberLabel: {
+    wwjs: { status: 'not-available', rootCause: 'library-limitation' },
+    baileys: { status: 'supported' },
+    evidence:
+      'wwjs 1.34.7 exposes NO member-label setter: 0 hits for memberLabel or member tag in index.d.ts and src/; adapter throws EngineNotSupportedError; baileys updateMemberLabel(jid, memberLabel) (Socket/messages-send.d.ts:34) relays a GROUP_MEMBER_LABEL_CHANGE protocol message to the group with the label cut by slice(0, 30) (messages-send.js:274-295)',
+  },
   setGroupInfoAdminsOnly: {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
@@ -374,7 +400,7 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     wwjs: { status: 'supported' },
     baileys: { status: 'supported' },
     evidence:
-      "wwjs Client.sendPresenceAvailable()/sendPresenceUnavailable() (index.d.ts:230/233); baileys sendPresenceUpdate('available'|'unavailable') with no jid — the global whole-account form (Socket/chats.d.ts:38). Connection-scoped on both: resets on reconnect (Baileys re-announces per markOnlineOnConnect)",
+      "wwjs Client.sendPresenceAvailable()/sendPresenceUnavailable() (index.d.ts:230/233); baileys sendPresenceUpdate('available'|'unavailable') with no jid — the global <presence> form, distinct from per-chat <chatstate> (Socket/chats.js). Baileys returns without sending when creds.me.name is unset; the adapter surfaces that as EngineNotReadyError. A successful call is remembered on the engine and re-applied once on each connection open, because markOnlineOnConnect re-broadcasts available",
   },
   setProfileName: {
     wwjs: { status: 'supported' },
@@ -417,6 +443,12 @@ export const CURATED_CAPABILITY_EXCEPTIONS: Record<string, MethodCapability> = {
     baileys: { status: 'not-available', rootCause: 'library-limitation' },
     evidence:
       "wwjs Message.vote(selectedOptions: string[]) (index.d.ts:1376) matches poll options BY NAME against msg.pollOptions and throws a bare STRING on a non-poll target (Message.js:1009-1040); baileys has no vote-send helper at all — only decryptPollVote for RECEIVING (Utils/process-message.d.ts), so sending needs a hand-built proto.Message.PollUpdateMessage with HMAC-SHA256 vote encryption keyed by the poll creation's messageSecret",
+  },
+  clickButton: {
+    wwjs: { status: 'not-available', rootCause: 'library-limitation' },
+    baileys: { status: 'supported' },
+    evidence:
+      'wwjs has no interactive button-reply send path; baileys sendMessage({buttonReply,type}) / sendMessage({listReply}) for buttonsMessage, templateMessage and listMessage (Types/Message.d.ts ButtonReplyInfo / listReply; Utils/messages.js). Native-flow interactiveMessage has no helper and is unverified: the adapter sends a template buttonReply, not InteractiveResponseMessage, and must not be advertised as fully supported until a live business native-flow prompt confirms the server accepts it',
   },
   unpinMessage: {
     wwjs: { status: 'supported' },

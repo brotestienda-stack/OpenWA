@@ -18,25 +18,59 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const dockerfile = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8');
 
+// The production stage's instructions, comment lines dropped and continuation lines joined. Searching
+// the whole file let a RUN line, a comment or the builder stage stand in for the instruction a test
+// names, so a patcher dropped from the production COPY still passed.
+const production = dockerfile
+  .slice(dockerfile.search(/^FROM .* AS production$/m))
+  .split('\n')
+  .filter(line => !line.trimStart().startsWith('#'))
+  .join('\n')
+  .replace(/\\\n/g, ' ')
+  .split('\n');
+const copied = production.filter(line => line.startsWith('COPY ')).flatMap(line => line.trim().split(/\s+/));
+// Every RUN instruction's words, single-spaced and padded, so a name only matches as a whole word.
+const run = ` ${production
+  .filter(line => line.startsWith('RUN '))
+  .join(' ')
+  .split(/\s+/)
+  .join(' ')} `;
+
 const patchers = fs
   .readdirSync(__dirname)
   .filter(f => f.startsWith('patch-') && f.endsWith('.js') && !f.endsWith('.spec.js'))
   .sort();
 
-test('the fixture finds the patchers at all', () => {
+test('the fixture finds the patchers and the production stage at all', () => {
   // Guard the guard: an empty list would make every assertion below vacuously pass.
   assert.ok(patchers.length >= 5, `expected several patchers, found ${patchers.length}`);
+  assert.ok(copied.length > 0 && run.trim().length > 0, 'no COPY or RUN instruction found in the production stage');
 });
 
 test('every patcher is COPIED into the production stage', () => {
-  const missing = patchers.filter(p => !dockerfile.includes(`scripts/${p}`));
+  const missing = patchers.filter(p => !copied.includes(`scripts/${p}`));
   assert.deepEqual(missing, [], `not copied into the image: ${missing.join(', ')}`);
+});
+
+test('every sibling module a patcher requires is COPIED into the production stage', () => {
+  // A patcher that needs ./atomic-write.js fails with MODULE_NOT_FOUND in the image build when only the
+  // patcher itself was copied. Derive the modules from the patchers' own require calls.
+  const needed = new Set(
+    patchers.flatMap(p =>
+      [...fs.readFileSync(path.join(__dirname, p), 'utf8').matchAll(/require\('\.\/([\w-]+)(?:\.js)?'\)/g)].map(
+        match => `scripts/${match[1]}.js`,
+      ),
+    ),
+  );
+  assert.ok(needed.has('scripts/atomic-write.js'), 'the fixture did not find the shared write helper');
+  const missing = [...needed].filter(file => !copied.includes(file));
+  assert.deepEqual(missing, [], `required by a patcher but not copied into the image: ${missing.join(', ')}`);
 });
 
 test('every patcher is RUN fatally after npm ci', () => {
   // The postinstall hook runs them --best-effort; the explicit run is the real gate, so a shape
   // change fails the image build instead of shipping unpatched.
-  const missing = patchers.filter(p => !dockerfile.includes(`node scripts/${p}`));
+  const missing = patchers.filter(p => !run.includes(` node scripts/${p} `));
   assert.deepEqual(missing, [], `never run in the image build: ${missing.join(', ')}`);
 });
 

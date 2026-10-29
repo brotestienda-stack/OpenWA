@@ -11,8 +11,9 @@ import { DataSource } from 'typeorm';
  *  - the driver binds a JS Date as the PROCESS's local wall time (`sessions.connectedAt`, the lease
  *    columns, the pending-delivery stamps: every column the app itself writes),
  *  - the driver parses a naive timestamp back as PROCESS-local,
- *  - `DEFAULT now()`, which is what fills every `@CreateDateColumn`/`@UpdateDateColumn` (TypeORM does
- *    not bind those), writes the SERVER session's zone.
+ *  - `DEFAULT now()`, which is what fills a `@CreateDateColumn`/`@UpdateDateColumn` the app leaves
+ *    alone (TypeORM binds one only when a value is passed, as the lid-mapping, chat-state and
+ *    message-store upserts and the Baileys history backfill do), writes the SERVER session's zone.
  *
  * Off UTC the row therefore carries two conventions at once, and comparisons that mix them are wrong by
  * the offset: a retention `LessThan(cutoff)` binds the cutoff as local wall time and measures it against
@@ -62,6 +63,8 @@ export const utcTimestampTypes = {
 };
 
 const SET_SESSION_UTC = "SET TIME ZONE 'UTC'";
+/** The pin's budget when no connect timeout is configured, or when it is 0 (the pool's timer off). */
+const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;
 
 /**
  * Pin a pooled session to UTC, through pg-pool's own connect hook.
@@ -70,8 +73,7 @@ const SET_SESSION_UTC = "SET TIME ZONE 'UTC'";
  * guaranteed to survive the path to the server (a pooler may drop it, and PgBouncer refuses the startup
  * packet outright unless it is listed in `ignore_startup_parameters`), and on this connection it is
  * already spoken for by the search_path of a non-public schema. pg-pool awaits this hook for every
- * client it opens, the first one during `DataSource.initialize()` included, so none can start unpinned,
- * and `connectionTimeoutMillis` still bounds the whole connect, the extra round trip included.
+ * client it opens, the first one during `DataSource.initialize()` included, so none can start unpinned.
  *
  * The hook rather than a `Client` subclass that pins inside its own `connect`, because the pool owns two
  * things a subclass cannot reach. It attaches the client's `error` listener BEFORE calling the hook, so
@@ -79,8 +81,17 @@ const SET_SESSION_UTC = "SET TIME ZONE 'UTC'";
  * instead of reaching Node as an unhandled `error` event, which ends the process. And it calls
  * `client.end()` when the hook rejects, so a server that refuses the statement does not leave an
  * authenticated backend open once per acquire until `max_connections` runs out.
+ *
+ * `connectionTimeoutMillis` does NOT cover this statement: pg-pool clears that timer once the socket
+ * is connected, before it invokes the hook, so a server that accepts the connection and then never
+ * answers would hold the acquire, and a boot waiting on it, for good. The statement therefore carries its
+ * own `query_timeout`: its rejection makes the pool end the client, and no other statement is limited by it.
  */
-const pinSessionToUtc = (client: ClientBase): Promise<unknown> => client.query(SET_SESSION_UTC);
+const pinSessionToUtc = (client: ClientBase, timeoutMs = DEFAULT_CONNECTION_TIMEOUT_MS): Promise<unknown> => {
+  // Held in a variable: @types/pg omits `query_timeout`, which the driver reads, so a literal fails the excess check.
+  const query = { text: SET_SESSION_UTC, query_timeout: timeoutMs };
+  return client.query(query);
+};
 
 /**
  * The `extra` block that pins a postgres data connection to UTC, for both entry points (the runtime
@@ -91,9 +102,20 @@ const pinSessionToUtc = (client: ClientBase): Promise<unknown> => client.query(S
  * form. Setting it here keeps it next to the two halves it belongs with, and ahead of any connection
  * built from the returned block.
  */
-export function postgresUtcExtra(): { types: typeof utcTimestampTypes; onConnect: typeof pinSessionToUtc } {
+export function postgresUtcExtra(connectionTimeoutMillis?: number): {
+  types: typeof utcTimestampTypes;
+  onConnect: (client: ClientBase) => Promise<unknown>;
+} {
   pgDefaults.parseInputDatesAsUTC = true;
-  return { types: utcTimestampTypes, onConnect: pinSessionToUtc };
+  const timeoutMs =
+    connectionTimeoutMillis && Number.isFinite(connectionTimeoutMillis) && connectionTimeoutMillis > 0
+      ? connectionTimeoutMillis
+      : DEFAULT_CONNECTION_TIMEOUT_MS;
+  return {
+    types: utcTimestampTypes,
+    onConnect:
+      timeoutMs === DEFAULT_CONNECTION_TIMEOUT_MS ? pinSessionToUtc : client => pinSessionToUtc(client, timeoutMs),
+  };
 }
 
 /**

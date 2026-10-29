@@ -43,7 +43,7 @@ public final class ContactsResource {
             ContactRecord.class);
     }
 
-    /** Check whether a phone number is registered on WhatsApp. */
+    /** Check whether a phone number is registered on WhatsApp. Requires an OPERATOR-level key. */
     public CheckNumberResponse check(String sessionId, String number) {
         return client.request(
             HttpMethod.GET,
@@ -65,7 +65,7 @@ public final class ContactsResource {
 
     /**
      * Batch-resolve profile picture URLs for up to 50 contacts in one request.
-     * Returns a map of contact id → URL (null when a lookup fails).
+     * Returns a map of contact id → URL (null when a lookup fails). An id skipped after a lookup timed out is absent from the map; ask for it again.
      */
     public ProfilePicturesResponse profilePictures(String sessionId, List<String> ids) {
         return client.request(
